@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://d1iw6lgd7r4gq"
-path="res://.godot/imported/base.png-dc98f7e8957c60b0eb42c07363cce613.ctex"
+uid="uid://d06tgwpj1bu1v"
+path="res://.godot/imported/smile.png-2034edf457f1a3d389809048545a4411.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/images/role/inara/base.png"
-dest_files=["res://.godot/imported/base.png-dc98f7e8957c60b0eb42c07363cce613.ctex"]
+source_file="res://assets/images/role/inara/smile.png"
+dest_files=["res://.godot/imported/smile.png-2034edf457f1a3d389809048545a4411.ctex"]
 
 [params]
 

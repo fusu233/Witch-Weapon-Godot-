@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://d1iw6lgd7r4gq"
-path="res://.godot/imported/base.png-dc98f7e8957c60b0eb42c07363cce613.ctex"
+uid="uid://7pnvtdck7nej"
+path="res://.godot/imported/surprise.png-1487a61e1677a2c023c8104c288c9f9e.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/images/role/inara/base.png"
-dest_files=["res://.godot/imported/base.png-dc98f7e8957c60b0eb42c07363cce613.ctex"]
+source_file="res://assets/images/role/inara/surprise.png"
+dest_files=["res://.godot/imported/surprise.png-1487a61e1677a2c023c8104c288c9f9e.ctex"]
 
 [params]
 
