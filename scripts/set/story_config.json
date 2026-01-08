@@ -208,5 +208,14 @@
 	  "第3节": "res://scenes/story/side02/side02_ep3.tscn",
 	  "第4节": "res://scenes/story/side02/side02_ep4.tscn"
 	}
+  },
+  "side03": {
+	"title": "纷争落幕",
+	"episodes": {
+	  "小怜": "res://scenes/story/side03/side03_ep1.tscn",
+	  "安妮": "res://scenes/story/side03/side03_ep2.tscn",
+	  "伊露卡": "res://scenes/story/side03/side03_ep3.tscn",
+	  "拉斐尔": "res://scenes/story/side03/side03_ep4.tscn"
+	}
   }
 }
