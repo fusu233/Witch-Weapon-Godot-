@@ -14,6 +14,16 @@ const CHARACTER_ICON_SIZE: Vector2i = Vector2i(96, 144)
 const BACKGROUND_ICON_SIZE: Vector2i = Vector2i(160, 90)
 const MOD_EDITOR_RESOURCE_INDEX_PATH: String = "res://assets/mod_editor_resource_index.json"
 const PALETTE_ROW_SIDE_PADDING_X: float = 10.0
+const EDITOR_PINS_FILENAME: String = "editor_pins.json"
+const BACKGROUND_STAR_TAB_KEY: String = "__starred__"
+
+const RESOURCE_ROW_BG: Color = Color(0.12, 0.12, 0.15, 1.0)
+const RESOURCE_ROW_BG_HOVER: Color = Color(0.16, 0.16, 0.20, 1.0)
+const RESOURCE_ROW_BG_PRESSED: Color = Color(0.10, 0.10, 0.14, 1.0)
+const RESOURCE_ROW_BG_SELECTED: Color = Color(0.14, 0.14, 0.20, 1.0)
+const RESOURCE_ROW_BORDER: Color = Color(0.35, 0.35, 0.45, 0.55)
+const RESOURCE_ROW_BORDER_HOVER: Color = Color(0.55, 0.55, 0.75, 0.85)
+const RESOURCE_ROW_BORDER_SELECTED: Color = Color(0.42, 0.39, 1.0, 0.9)
 
 # 脚本块类型枚举
 enum BlockType {
@@ -290,6 +300,10 @@ var project_path: String = ""
 var project_config: Dictionary = {}
 var script_blocks: Array[ScriptBlock] = []
 var selected_block: ScriptBlock = null
+var _project_root: String = ""
+var _editor_pins_path: String = ""
+var _editor_pins_loaded: bool = false
+var _editor_pins: Dictionary = {}
 
 # 预览相关
 var novel_interface: Node = null
@@ -318,6 +332,11 @@ var _resource_index: Dictionary = {}
 var _music_preview_player: AudioStreamPlayer = null
 var _music_preview_current_path: String = ""
 var _music_preview_buttons_by_path: Dictionary = {}
+
+var _character_rows_scroll: ScrollContainer = null
+var _character_rows: VBoxContainer = null
+var _resource_selected_keys: Dictionary = {} # mode -> key
+var _expression_list_character_name: String = ""
 
 var _main_bgm_player: AudioStreamPlayer = null
 var _main_bgm_suspended: bool = false
@@ -371,6 +390,150 @@ func _setup_resource_panel() -> void:
 	# 更适合显示缩略图
 	characters_list.fixed_icon_size = CHARACTER_ICON_SIZE
 	characters_list.max_columns = 1
+	_ensure_character_rows_ui()
+
+func _ensure_character_rows_ui() -> void:
+	if _character_rows_scroll != null and is_instance_valid(_character_rows_scroll):
+		return
+	if characters_list == null:
+		return
+	var parent := characters_list.get_parent() as Control
+	if parent == null:
+		return
+
+	var scroll := ScrollContainer.new()
+	scroll.name = "CharactersRowsScroll"
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	scroll.visible = false
+
+	var rows := VBoxContainer.new()
+	rows.name = "Rows"
+	rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	rows.add_theme_constant_override("separation", 10)
+	scroll.add_child(rows)
+
+	parent.add_child(scroll)
+	_character_rows_scroll = scroll
+	_character_rows = rows
+
+func _create_resource_row_style() -> StyleBoxFlat:
+	var style := StyleBoxFlat.new()
+	style.bg_color = RESOURCE_ROW_BG
+	style.border_width_left = 2
+	style.border_width_top = 2
+	style.border_width_right = 2
+	style.border_width_bottom = 2
+	style.border_color = RESOURCE_ROW_BORDER
+	style.content_margin_left = 8
+	style.content_margin_top = 6
+	style.content_margin_right = 8
+	style.content_margin_bottom = 6
+	style.corner_radius_top_left = 6
+	style.corner_radius_top_right = 6
+	style.corner_radius_bottom_left = 6
+	style.corner_radius_bottom_right = 6
+	return style
+
+func _get_selected_resource_key(mode: String) -> String:
+	if not _resource_selected_keys.has(mode):
+		return ""
+	return str(_resource_selected_keys.get(mode, ""))
+
+func _apply_resource_row_visual(panel: PanelContainer) -> void:
+	if panel == null:
+		return
+	var style_any: Variant = panel.get_meta("resource_style")
+	var style := style_any as StyleBoxFlat
+	if style == null:
+		return
+
+	var mode := str(panel.get_meta("resource_mode"))
+	var key := str(panel.get_meta("resource_key"))
+	var hovered := bool(panel.get_meta("resource_hovered"))
+	var pressed := bool(panel.get_meta("resource_pressed"))
+	var selected := (not key.is_empty()) and (key == _get_selected_resource_key(mode))
+
+	if pressed:
+		style.bg_color = RESOURCE_ROW_BG_PRESSED
+	elif selected:
+		style.bg_color = RESOURCE_ROW_BG_SELECTED
+	elif hovered:
+		style.bg_color = RESOURCE_ROW_BG_HOVER
+	else:
+		style.bg_color = RESOURCE_ROW_BG
+
+	if selected:
+		style.border_color = RESOURCE_ROW_BORDER_SELECTED
+	elif hovered:
+		style.border_color = RESOURCE_ROW_BORDER_HOVER
+	else:
+		style.border_color = RESOURCE_ROW_BORDER
+
+func _refresh_visible_resource_row_styles() -> void:
+	if _resource_mode == "music" and music_rows != null:
+		for child in music_rows.get_children():
+			var panel := child as PanelContainer
+			if panel != null:
+				_apply_resource_row_visual(panel)
+	elif _resource_mode in ["character", "expression"] and _character_rows != null:
+		for child in _character_rows.get_children():
+			var panel := child as PanelContainer
+			if panel != null:
+				_apply_resource_row_visual(panel)
+	elif _resource_mode == "background" and background_tabs != null:
+		var rows := _get_background_tab_rows(background_tabs.current_tab)
+		if rows != null:
+			for child in rows.get_children():
+				var panel := child as PanelContainer
+				if panel != null:
+					_apply_resource_row_visual(panel)
+
+func _set_resource_selected_key(mode: String, key: String) -> void:
+	if mode.is_empty():
+		return
+	_resource_selected_keys[mode] = key
+	_refresh_visible_resource_row_styles()
+
+func _make_interactive_resource_row(mode: String, key: String, on_activate: Callable) -> PanelContainer:
+	var panel := PanelContainer.new()
+	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	panel.mouse_filter = Control.MOUSE_FILTER_STOP
+
+	var style := _create_resource_row_style()
+	panel.add_theme_stylebox_override("panel", style)
+
+	panel.set_meta("resource_mode", mode)
+	panel.set_meta("resource_key", key)
+	panel.set_meta("resource_style", style)
+	panel.set_meta("resource_hovered", false)
+	panel.set_meta("resource_pressed", false)
+
+	panel.mouse_entered.connect(func():
+		panel.set_meta("resource_hovered", true)
+		_apply_resource_row_visual(panel)
+	)
+	panel.mouse_exited.connect(func():
+		panel.set_meta("resource_hovered", false)
+		panel.set_meta("resource_pressed", false)
+		_apply_resource_row_visual(panel)
+	)
+	panel.gui_input.connect(func(ev: InputEvent):
+		if ev is InputEventMouseButton and (ev as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
+			if (ev as InputEventMouseButton).pressed:
+				panel.set_meta("resource_pressed", true)
+				_apply_resource_row_visual(panel)
+			else:
+				panel.set_meta("resource_pressed", false)
+				_apply_resource_row_visual(panel)
+				if on_activate.is_valid():
+					on_activate.call()
+	)
+
+	_apply_resource_row_visual(panel)
+	return panel
 
 func _input(event: InputEvent) -> void:
 	# 结束拖拽（或取消拖拽）时隐藏插入指示线
@@ -468,7 +631,10 @@ func _set_resource_panel_mode(mode: String) -> void:
 		characters_label.visible = mode in ["character", "expression"]
 		characters_label.text = "表情:" if mode == "expression" else "角色:"
 	if characters_list:
-		characters_list.visible = mode in ["character", "expression"]
+		characters_list.visible = false
+	_ensure_character_rows_ui()
+	if _character_rows_scroll:
+		_character_rows_scroll.visible = mode in ["character", "expression"]
 
 	if backgrounds_label:
 		backgrounds_label.visible = mode == "background"
@@ -493,6 +659,8 @@ func _set_resource_panel_mode(mode: String) -> void:
 	if mode == "none":
 		if characters_list:
 			characters_list.clear()
+		if _character_rows:
+			_clear_children(_character_rows)
 		if backgrounds_list:
 			backgrounds_list.clear()
 		if background_tabs:
@@ -525,13 +693,131 @@ func _load_characters_list():
 			if not unique.has(character_name):
 				unique[character_name] = true
 				character_names.append(character_name)
-	character_names.sort()
 	_set_resource_panel_mode("character")
-	characters_list.clear()
+	_ensure_character_rows_ui()
+	if _character_rows == null:
+		return
+	_clear_children(_character_rows)
+
+	character_names.sort()
+	var pinned := _get_pinned_character_names()
+	var pinned_set: Dictionary = {}
+	for entry in pinned:
+		pinned_set[str(entry)] = true
+
+	# 先按置顶顺序添加（仅添加存在的角色）
+	var count_added := 0
+	for pinned_name_any in pinned:
+		var pinned_name := str(pinned_name_any)
+		if unique.has(pinned_name):
+			_add_character_row(_character_rows, pinned_name, true)
+			count_added += 1
+
+	# 再添加未置顶角色（按字母序）
 	for character_name in character_names:
-		var icon := _get_character_thumbnail(character_name)
-		characters_list.add_item(character_name, icon)
-	print("Loaded %d characters" % characters_list.item_count)
+		if pinned_set.has(character_name):
+			continue
+		_add_character_row(_character_rows, character_name, false)
+		count_added += 1
+
+	print("Loaded %d characters" % count_added)
+	_refresh_visible_resource_row_styles()
+
+func _add_character_row(parent: VBoxContainer, character_name: String, is_pinned: bool) -> void:
+	if parent == null:
+		return
+
+	var panel := _make_interactive_resource_row("character", character_name, Callable(self, "_select_character_name").bind(character_name))
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var thumb_holder := Control.new()
+	thumb_holder.custom_minimum_size = Vector2(float(CHARACTER_ICON_SIZE.x), float(CHARACTER_ICON_SIZE.y))
+	thumb_holder.size_flags_horizontal = 0
+	thumb_holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var texture_rect := TextureRect.new()
+	texture_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	texture_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	texture_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	texture_rect.texture = _get_character_thumbnail(character_name)
+	thumb_holder.add_child(texture_rect)
+
+	var star_button := Button.new()
+	star_button.text = "★" if is_pinned else "☆"
+	star_button.tooltip_text = "取消置顶" if is_pinned else "置顶到顶部"
+	star_button.custom_minimum_size = Vector2(22, 22)
+	star_button.focus_mode = Control.FOCUS_NONE
+	star_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	star_button.position = Vector2(4, 4)
+	star_button.pressed.connect(Callable(self, "_on_character_pin_pressed").bind(character_name))
+	if is_pinned:
+		star_button.modulate = Color(1.0, 0.9, 0.25)
+	thumb_holder.add_child(star_button)
+
+	var label := Label.new()
+	label.text = character_name
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.clip_text = true
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	row.add_child(thumb_holder)
+	row.add_child(label)
+	panel.add_child(row)
+	parent.add_child(panel)
+
+func _expression_key(character_name: String, expression_name: String) -> String:
+	var c := character_name.strip_edges()
+	var e := expression_name.strip_edges()
+	return "%s|%s" % [c, e]
+
+func _add_expression_row(parent: VBoxContainer, character_name: String, expression_name: String, is_pinned: bool = false) -> void:
+	if parent == null:
+		return
+
+	var key := _expression_key(character_name, expression_name)
+	var panel := _make_interactive_resource_row("expression", key, Callable(self, "_select_expression_name").bind(expression_name))
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var thumb_holder := Control.new()
+	thumb_holder.custom_minimum_size = Vector2(float(CHARACTER_ICON_SIZE.x), float(CHARACTER_ICON_SIZE.y))
+	thumb_holder.size_flags_horizontal = 0
+	thumb_holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var texture_rect := TextureRect.new()
+	texture_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	texture_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	texture_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	texture_rect.texture = _get_expression_thumbnail(character_name, expression_name)
+	thumb_holder.add_child(texture_rect)
+
+	var star_button := Button.new()
+	star_button.text = "★" if is_pinned else "☆"
+	star_button.tooltip_text = "取消置顶" if is_pinned else "置顶到顶部"
+	star_button.custom_minimum_size = Vector2(22, 22)
+	star_button.focus_mode = Control.FOCUS_NONE
+	star_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	star_button.position = Vector2(4, 4)
+	star_button.pressed.connect(Callable(self, "_on_expression_pin_pressed").bind(character_name, expression_name))
+	if is_pinned:
+		star_button.modulate = Color(1.0, 0.9, 0.25)
+	thumb_holder.add_child(star_button)
+
+	var label := Label.new()
+	label.text = expression_name
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.clip_text = true
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	row.add_child(thumb_holder)
+	row.add_child(label)
+	panel.add_child(row)
+	parent.add_child(panel)
 
 func _load_backgrounds_list():
 	"""扫描并加载背景列表"""
@@ -565,6 +851,9 @@ func _refresh_background_tabs() -> void:
 
 	var allowed_exts: Array[String] = [".png", ".jpg", ".jpeg", ".webp"]
 
+	# 固定星标Tab：用于收纳玩家收藏的背景（不置顶其他Tab）
+	_add_background_tab("★", BACKGROUND_STAR_TAB_KEY)
+
 	var root_files: Array[String] = _collect_files_flat(_background_base_dir, allowed_exts)
 	if root_files.is_empty():
 		root_files = _get_index_background_root_files()
@@ -595,20 +884,88 @@ func _refresh_background_tabs() -> void:
 	background_tabs.tab_changed.connect(_on_background_tab_changed)
 
 	if background_tabs.get_child_count() > 0:
-		background_tabs.current_tab = 0
-		_on_background_tab_changed(0)
+		# 默认显示第一个“非星标”tab（更符合挑选资源的直觉）；如果没有则显示星标tab。
+		var default_tab := 1 if background_tabs.get_child_count() > 1 else 0
+		background_tabs.current_tab = default_tab
+		_on_background_tab_changed(default_tab)
 
 func _add_background_tab(title: String, rel_dir: String) -> void:
-	var list: ItemList = ItemList.new()
-	list.name = title
-	list.fixed_icon_size = BACKGROUND_ICON_SIZE
-	list.max_columns = 1
-	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	list.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	list.item_selected.connect(_on_background_selected.bind(list))
-	background_tabs.add_child(list)
+	var scroll := ScrollContainer.new()
+	scroll.name = title
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+
+	var rows := VBoxContainer.new()
+	rows.name = "Rows"
+	rows.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	rows.add_theme_constant_override("separation", 10)
+	scroll.add_child(rows)
+
+	background_tabs.add_child(scroll)
 	_background_tab_dirs.append(rel_dir)
 	_background_tab_loaded.append(false)
+
+func _get_background_tab_rows(tab_index: int) -> VBoxContainer:
+	if background_tabs == null:
+		return null
+	var scroll := background_tabs.get_child(tab_index) as ScrollContainer
+	if scroll == null:
+		return null
+	var rows := scroll.get_node_or_null("Rows") as VBoxContainer
+	return rows
+
+func _clear_children(node: Node) -> void:
+	if node == null:
+		return
+	for child in node.get_children():
+		child.queue_free()
+
+func _add_background_thumb_row(parent: VBoxContainer, display_text: String, full_path: String, is_starred: bool) -> void:
+	if parent == null:
+		return
+
+	var panel := _make_interactive_resource_row("background", full_path, Callable(self, "_select_background_path").bind(full_path))
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var thumb_holder := Control.new()
+	thumb_holder.custom_minimum_size = Vector2(float(BACKGROUND_ICON_SIZE.x), float(BACKGROUND_ICON_SIZE.y))
+	thumb_holder.size_flags_horizontal = 0
+	thumb_holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var texture_rect := TextureRect.new()
+	texture_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	texture_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	texture_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	texture_rect.texture = _get_background_thumbnail(full_path)
+	thumb_holder.add_child(texture_rect)
+
+	var star_button := Button.new()
+	star_button.text = "★" if is_starred else "☆"
+	star_button.tooltip_text = "从星标移除" if is_starred else "加入星标"
+	star_button.custom_minimum_size = Vector2(22, 22)
+	star_button.focus_mode = Control.FOCUS_NONE
+	star_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	star_button.position = Vector2(4, 4)
+	star_button.pressed.connect(Callable(self, "_on_background_star_pressed").bind(full_path))
+	if is_starred:
+		star_button.modulate = Color(1.0, 0.9, 0.25)
+	thumb_holder.add_child(star_button)
+
+	var label := Label.new()
+	label.text = display_text
+	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	label.clip_text = true
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	row.add_child(thumb_holder)
+	row.add_child(label)
+	panel.add_child(row)
+	parent.add_child(panel)
 
 func _on_background_tab_changed(tab_index: int) -> void:
 	if tab_index < 0 or tab_index >= background_tabs.get_child_count():
@@ -618,12 +975,32 @@ func _on_background_tab_changed(tab_index: int) -> void:
 	if _background_tab_loaded[tab_index]:
 		return
 
-	var list: ItemList = background_tabs.get_child(tab_index) as ItemList
-	if list == null:
+	var rows := _get_background_tab_rows(tab_index)
+	if rows == null:
+		return
+
+	var rel_dir: String = _background_tab_dirs[tab_index]
+	_clear_children(rows)
+
+	# 星标Tab：直接从项目级收藏列表生成
+	if rel_dir == BACKGROUND_STAR_TAB_KEY:
+		var starred := _get_starred_background_paths()
+		var count_added := 0
+		for p_any in starred:
+			var full_path := str(p_any)
+			if not _resource_exists_with_remap(full_path):
+				continue
+			var display := full_path
+			if not _background_base_dir.is_empty() and full_path.begins_with(_background_base_dir):
+				display = full_path.substr(_background_base_dir.length())
+			_add_background_thumb_row(rows, display, full_path, true)
+			count_added += 1
+		_background_tab_loaded[tab_index] = true
+		print("已加载背景分类[%s] %d 个" % ["★", count_added])
+		_refresh_visible_resource_row_styles()
 		return
 
 	var allowed_exts: Array[String] = [".png", ".jpg", ".jpeg", ".webp"]
-	var rel_dir: String = _background_tab_dirs[tab_index]
 	var rel_files: Array[String] = []
 	if rel_dir.is_empty():
 		rel_files = _collect_files_flat(_background_base_dir, allowed_exts)
@@ -639,12 +1016,12 @@ func _on_background_tab_changed(tab_index: int) -> void:
 	rel_files.sort()
 	for rel_path: String in rel_files:
 		var full_path: String = (_background_base_dir + rel_dir + rel_path) if not rel_dir.is_empty() else (_background_base_dir + rel_path)
-		var icon := _get_background_thumbnail(full_path)
-		var idx := list.add_item(rel_path, icon)
-		list.set_item_metadata(idx, full_path)
+		_add_background_thumb_row(rows, rel_path, full_path, _is_background_starred(full_path))
 
 	_background_tab_loaded[tab_index] = true
-	print("已加载背景分类[%s] %d 个" % [list.name, rel_files.size()])
+	var tab_title := background_tabs.get_child(tab_index).name
+	print("已加载背景分类[%s] %d 个" % [tab_title, rel_files.size()])
+	_refresh_visible_resource_row_styles()
 
 func _dir_has_any_entry(dir_path: String) -> bool:
 	var normalized := dir_path.trim_suffix("/")
@@ -795,28 +1172,56 @@ func _load_music_list():
 		rel_files = _get_index_music_files()
 	rel_files.sort()
 
+	var pinned_paths := _get_pinned_music_paths()
+	var pinned_set: Dictionary = {}
+	var full_to_rel: Dictionary = {}
+	for rel_path: String in rel_files:
+		full_to_rel[base_dir + rel_path] = rel_path
+	for p_any in pinned_paths:
+		pinned_set[str(p_any)] = true
+
+	# 先按用户置顶顺序添加
+	for p_any in pinned_paths:
+		var p := str(p_any)
+		if full_to_rel.has(p):
+			_add_music_row(str(full_to_rel.get(p)), p, true)
+
+	# 再添加其余
 	for rel_path: String in rel_files:
 		var full_path: String = base_dir + rel_path
-		_add_music_row(rel_path, full_path)
+		if pinned_set.has(full_path):
+			continue
+		_add_music_row(rel_path, full_path, false)
 
 	print("已加载 %d 首音乐" % rel_files.size())
+	_refresh_visible_resource_row_styles()
 
-func _add_music_row(display_name: String, full_path: String) -> void:
+func _add_music_row(display_name: String, full_path: String, is_pinned: bool = false) -> void:
 	if music_rows == null:
 		return
 
 	_ensure_music_preview_player()
 
+	var panel := _make_interactive_resource_row("music", full_path, Callable(self, "_select_music_path").bind(full_path))
+
 	var row: HBoxContainer = HBoxContainer.new()
 	row.add_theme_constant_override("separation", 6)
 	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var pin_button: Button = Button.new()
+	pin_button.text = "★" if is_pinned else "☆"
+	pin_button.tooltip_text = "取消置顶" if is_pinned else "置顶到顶部"
+	pin_button.custom_minimum_size = Vector2(26, 0)
+	pin_button.focus_mode = Control.FOCUS_NONE
+	pin_button.pressed.connect(Callable(self, "_on_music_pin_pressed").bind(full_path))
+	if is_pinned:
+		pin_button.modulate = Color(1.0, 0.9, 0.25)
 
 	var name_label: Label = Label.new()
 	name_label.text = display_name.get_file()
 	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	name_label.clip_text = true
-	name_label.mouse_filter = Control.MOUSE_FILTER_STOP
-	name_label.gui_input.connect(Callable(self, "_on_music_name_gui_input").bind(full_path))
+	name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 	var preview_button: Button = Button.new()
 	preview_button.text = "▶"
@@ -825,16 +1230,14 @@ func _add_music_row(display_name: String, full_path: String) -> void:
 	preview_button.focus_mode = Control.FOCUS_NONE
 	preview_button.pressed.connect(Callable(self, "_toggle_music_preview").bind(full_path))
 
+	row.add_child(pin_button)
 	row.add_child(name_label)
 	row.add_child(preview_button)
-	music_rows.add_child(row)
+	panel.add_child(row)
+	music_rows.add_child(panel)
 
 	_music_preview_buttons_by_path[full_path] = preview_button
 	_update_music_preview_buttons()
-
-func _on_music_name_gui_input(event: InputEvent, full_path: String) -> void:
-	if event is InputEventMouseButton and (event as InputEventMouseButton).pressed and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
-		_select_music_path(full_path)
 
 func _select_music_path(full_path: String) -> void:
 	if current_editing_field == null or current_editing_param != "music_path":
@@ -842,6 +1245,7 @@ func _select_music_path(full_path: String) -> void:
 
 	current_editing_field.text = full_path
 	current_editing_field.text_changed.emit(full_path)
+	_set_resource_selected_key("music", full_path)
 
 func _ensure_music_preview_player() -> void:
 	if _music_preview_player != null:
@@ -1070,13 +1474,32 @@ func _load_expressions_list(character_name: String) -> void:
 		return
 
 	_set_resource_panel_mode("expression")
-	characters_list.clear()
+	_expression_list_character_name = character_name.strip_edges()
+	_ensure_character_rows_ui()
+	if characters_list:
+		characters_list.clear()
+	if _character_rows == null:
+		return
+	_clear_children(_character_rows)
 
 	var expressions := _get_character_expressions(character_name)
 	expressions.sort()
+	var pinned := _get_pinned_expression_names_for_character(_expression_list_character_name)
+	var pinned_set: Dictionary = {}
+	for entry in pinned:
+		pinned_set[str(entry)] = true
+
+	for pinned_expr_any in pinned:
+		var pinned_expr := str(pinned_expr_any)
+		if expressions.has(pinned_expr):
+			_add_expression_row(_character_rows, _expression_list_character_name, pinned_expr, true)
+
 	for expression_name in expressions:
-		var icon := _get_expression_thumbnail(character_name, expression_name)
-		characters_list.add_item(expression_name, icon)
+		if pinned_set.has(expression_name):
+			continue
+		_add_expression_row(_character_rows, _expression_list_character_name, expression_name, false)
+
+	_refresh_visible_resource_row_styles()
 
 func _on_character_selected(index: int):
 	"""角色列表项被选中"""
@@ -1110,9 +1533,36 @@ func _on_background_selected(index: int, source_list: ItemList = null):
 				# 如果不存在，尝试 res://assets/background/ 路径
 				full_path = "res://assets/background/" + bg_name
 
-		current_editing_field.text = full_path
-		# 触发text_changed信号以保存数据
-		current_editing_field.text_changed.emit(full_path)
+		_select_background_path(full_path)
+
+func _select_background_path(full_path: String) -> void:
+	if current_editing_field == null or current_editing_param != "background_path":
+		return
+	if full_path.is_empty():
+		return
+	current_editing_field.text = full_path
+	current_editing_field.text_changed.emit(full_path)
+	_set_resource_selected_key("background", full_path)
+
+func _select_character_name(character_name: String) -> void:
+	if current_editing_field == null or current_editing_param != "character_name":
+		return
+	var selected_character_name := character_name.strip_edges()
+	if selected_character_name.is_empty():
+		return
+	current_editing_field.text = selected_character_name
+	current_editing_field.text_changed.emit(selected_character_name)
+	_set_resource_selected_key("character", selected_character_name)
+
+func _select_expression_name(expression_name: String) -> void:
+	if current_editing_field == null or current_editing_param != "expression":
+		return
+	var expr := expression_name.strip_edges()
+	if expr.is_empty():
+		return
+	current_editing_field.text = expr
+	current_editing_field.text_changed.emit(expr)
+	_set_resource_selected_key("expression", _expression_key(_expression_list_character_name, expr))
 
 func _on_music_selected(index: int):
 	"""音乐列表项被选中"""
@@ -1475,6 +1925,7 @@ func _update_all_block_ui():
 
 func load_project(path: String):
 	"""加载工程"""
+	_set_project_context_from_episode_dir(path)
 	project_path = path
 	var config_file = FileAccess.open(path + "/project.json", FileAccess.READ)
 	if config_file:
@@ -1490,6 +1941,242 @@ func load_project(path: String):
 					_add_script_block_from_data(script_data)
 		config_file.close()
 	_validate_all_blocks()
+
+func _set_project_context_from_episode_dir(episode_dir: String) -> void:
+	var normalized := episode_dir.replace("\\", "/").trim_suffix("/")
+	var marker := "/episodes/"
+	var idx := normalized.find(marker)
+	_project_root = normalized.substr(0, idx) if idx != -1 else normalized
+	_editor_pins_path = "" if _project_root.is_empty() else (_project_root + "/" + EDITOR_PINS_FILENAME)
+	_editor_pins_loaded = false
+	_editor_pins = {}
+
+func _load_json_dict_from_path(path: String) -> Dictionary:
+	if path.is_empty() or not FileAccess.file_exists(path):
+		return {}
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return {}
+	var json := JSON.new()
+	var err := json.parse(f.get_as_text())
+	f.close()
+	if err != OK:
+		return {}
+	if typeof(json.data) == TYPE_DICTIONARY:
+		return json.data as Dictionary
+	return {}
+
+func _save_json_dict_to_path(path: String, data: Dictionary) -> void:
+	if path.is_empty():
+		return
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify(data, "\t"))
+	f.close()
+
+func _get_editor_pins() -> Dictionary:
+	if _editor_pins_loaded:
+		return _editor_pins
+	_editor_pins_loaded = true
+
+	var pins := _load_json_dict_from_path(_editor_pins_path)
+	if pins.is_empty():
+		pins = {"version": 1, "pinned_music": [], "starred_backgrounds": [], "pinned_characters": [], "pinned_expressions": {}}
+	if not pins.has("version"):
+		pins["version"] = 1
+	if not pins.has("pinned_music") or typeof(pins.get("pinned_music")) != TYPE_ARRAY:
+		pins["pinned_music"] = []
+	if not pins.has("starred_backgrounds") or typeof(pins.get("starred_backgrounds")) != TYPE_ARRAY:
+		pins["starred_backgrounds"] = []
+	if not pins.has("pinned_characters") or typeof(pins.get("pinned_characters")) != TYPE_ARRAY:
+		pins["pinned_characters"] = []
+	if not pins.has("pinned_expressions") or typeof(pins.get("pinned_expressions")) != TYPE_DICTIONARY:
+		pins["pinned_expressions"] = {}
+
+	_editor_pins = pins
+	return _editor_pins
+
+func _save_editor_pins() -> void:
+	if _editor_pins_path.is_empty():
+		return
+	_save_json_dict_to_path(_editor_pins_path, _editor_pins)
+
+func _get_pinned_music_paths() -> Array[String]:
+	var pins := _get_editor_pins()
+	var raw: Variant = pins.get("pinned_music", [])
+	if typeof(raw) != TYPE_ARRAY:
+		var empty: Array[String] = []
+		return empty
+	var unique: Dictionary = {}
+	var result: Array[String] = []
+	for entry in (raw as Array):
+		var s := str(entry).strip_edges()
+		if s.is_empty() or unique.has(s):
+			continue
+		unique[s] = true
+		result.append(s)
+	return result
+
+func _toggle_music_pinned(full_path: String) -> void:
+	if full_path.is_empty() or _editor_pins_path.is_empty():
+		return
+	var pins := _get_editor_pins()
+	var pinned := _get_pinned_music_paths()
+	var idx := pinned.find(full_path)
+	if idx == -1:
+		pinned.append(full_path)
+	else:
+		pinned.remove_at(idx)
+	pins["pinned_music"] = pinned
+	_editor_pins = pins
+	_save_editor_pins()
+	if _resource_mode == "music":
+		_load_music_list()
+
+func _on_music_pin_pressed(full_path: String) -> void:
+	_toggle_music_pinned(full_path)
+
+func _get_pinned_character_names() -> Array[String]:
+	var pins := _get_editor_pins()
+	var raw: Variant = pins.get("pinned_characters", [])
+	if typeof(raw) != TYPE_ARRAY:
+		var empty: Array[String] = []
+		return empty
+	var unique: Dictionary = {}
+	var result: Array[String] = []
+	for entry in (raw as Array):
+		var s := str(entry).strip_edges()
+		if s.is_empty() or unique.has(s):
+			continue
+		unique[s] = true
+		result.append(s)
+	return result
+
+func _toggle_character_pinned(character_name: String) -> void:
+	var normalized_character_name := character_name.strip_edges()
+	if normalized_character_name.is_empty() or _editor_pins_path.is_empty():
+		return
+	var pins := _get_editor_pins()
+	var pinned := _get_pinned_character_names()
+	var idx := pinned.find(normalized_character_name)
+	if idx == -1:
+		pinned.append(normalized_character_name)
+	else:
+		pinned.remove_at(idx)
+	pins["pinned_characters"] = pinned
+	_editor_pins = pins
+	_save_editor_pins()
+	if _resource_mode == "character":
+		_load_characters_list()
+
+func _on_character_pin_pressed(character_name: String) -> void:
+	_toggle_character_pinned(character_name)
+
+func _get_pinned_expression_names_for_character(character_name: String) -> Array[String]:
+	var c := character_name.strip_edges()
+	if c.is_empty():
+		var empty: Array[String] = []
+		return empty
+	var pins := _get_editor_pins()
+	var all_any: Variant = pins.get("pinned_expressions", {})
+	if typeof(all_any) != TYPE_DICTIONARY:
+		var empty: Array[String] = []
+		return empty
+
+	var list_any: Variant = (all_any as Dictionary).get(c, [])
+	if typeof(list_any) != TYPE_ARRAY:
+		var empty: Array[String] = []
+		return empty
+
+	var unique: Dictionary = {}
+	var result: Array[String] = []
+	for entry in (list_any as Array):
+		var s := str(entry).strip_edges()
+		if s.is_empty() or unique.has(s):
+			continue
+		unique[s] = true
+		result.append(s)
+	return result
+
+func _toggle_expression_pinned(character_name: String, expression_name: String) -> void:
+	var c := character_name.strip_edges()
+	var e := expression_name.strip_edges()
+	if c.is_empty() or e.is_empty() or _editor_pins_path.is_empty():
+		return
+	var pins := _get_editor_pins()
+	var all_any: Variant = pins.get("pinned_expressions", {})
+	var all: Dictionary = all_any as Dictionary if typeof(all_any) == TYPE_DICTIONARY else {}
+
+	var pinned := _get_pinned_expression_names_for_character(c)
+	var idx := pinned.find(e)
+	if idx == -1:
+		pinned.append(e)
+	else:
+		pinned.remove_at(idx)
+
+	all[c] = pinned
+	pins["pinned_expressions"] = all
+	_editor_pins = pins
+	_save_editor_pins()
+
+	if _resource_mode == "expression" and _expression_list_character_name == c:
+		_load_expressions_list(c)
+
+func _on_expression_pin_pressed(character_name: String, expression_name: String) -> void:
+	_toggle_expression_pinned(character_name, expression_name)
+
+func _get_starred_background_paths() -> Array[String]:
+	var pins := _get_editor_pins()
+	var raw: Variant = pins.get("starred_backgrounds", [])
+	if typeof(raw) != TYPE_ARRAY:
+		var empty: Array[String] = []
+		return empty
+	var unique: Dictionary = {}
+	var result: Array[String] = []
+	for entry in (raw as Array):
+		var s := str(entry).strip_edges()
+		if s.is_empty() or unique.has(s):
+			continue
+		unique[s] = true
+		result.append(s)
+	return result
+
+func _is_background_starred(full_path: String) -> bool:
+	return _get_starred_background_paths().has(full_path)
+
+func _toggle_background_star(full_path: String) -> void:
+	if full_path.is_empty() or _editor_pins_path.is_empty():
+		return
+	var pins := _get_editor_pins()
+	var starred := _get_starred_background_paths()
+	var idx := starred.find(full_path)
+	if idx == -1:
+		starred.append(full_path)
+	else:
+		starred.remove_at(idx)
+	pins["starred_backgrounds"] = starred
+	_editor_pins = pins
+	_save_editor_pins()
+	_refresh_background_star_state_ui()
+
+func _on_background_star_pressed(full_path: String) -> void:
+	_toggle_background_star(full_path)
+
+func _refresh_background_star_state_ui() -> void:
+	# 背景星标会影响所有分类tab中的星标显示（但我们不维护每个按钮引用），
+	# 所以在星标变更后把所有tab标记为“需重建”，并重建当前tab。
+	if _resource_mode != "background" or background_tabs == null:
+		return
+	if _background_tab_loaded.is_empty():
+		return
+
+	for i in range(_background_tab_loaded.size()):
+		_background_tab_loaded[i] = false
+
+	var current_idx := background_tabs.current_tab
+	if current_idx >= 0 and current_idx < background_tabs.get_child_count():
+		_on_background_tab_changed(current_idx)
 
 func _create_block_palette():
 	"""创建分类的脚本块工具箱"""
@@ -1846,6 +2533,7 @@ func _add_show_character_inspector(block: ScriptBlock):
 	name_input.focus_entered.connect(func():
 		current_editing_field = name_input
 		current_editing_param = "character_name"
+		_set_resource_selected_key("character", name_input.text)
 		_load_characters_list()
 	)
 	inspector_content.add_child(name_input)
@@ -1867,7 +2555,9 @@ func _add_show_character_inspector(block: ScriptBlock):
 	expr_input.focus_entered.connect(func():
 		current_editing_field = expr_input
 		current_editing_param = "expression"
-		_load_expressions_list(block.params.get("character_name", ""))
+		var selected_character := str(block.params.get("character_name", "")).strip_edges()
+		_set_resource_selected_key("expression", _expression_key(selected_character, expr_input.text))
+		_load_expressions_list(selected_character)
 	)
 	inspector_content.add_child(expr_input)
 
@@ -1972,6 +2662,7 @@ func _add_character_expression_inspector(block: ScriptBlock, slot: int) -> void:
 			info_label.text = "%s（推断）: %s" % [slot_name, name_now]
 			current_editing_field = input
 			current_editing_param = "expression"
+			_set_resource_selected_key("expression", _expression_key(name_now, input.text))
 			_load_expressions_list(name_now)
 		else:
 			info_label.text = "%s（推断）: 未显示或已隐藏（必须先显示对应角色）" % slot_name
@@ -2030,6 +2721,7 @@ func _add_character_light_inspector(block: ScriptBlock, slot: int) -> void:
 			info_label.text = "%s（推断）: %s" % [slot_name, name_now]
 			current_editing_field = expr_input
 			current_editing_param = "expression"
+			_set_resource_selected_key("expression", _expression_key(name_now, expr_input.text))
 			_load_expressions_list(name_now)
 		else:
 			info_label.text = "%s（推断）: 未显示或已隐藏（必须先显示对应角色）" % slot_name
@@ -2108,6 +2800,7 @@ func _add_character_move_left_inspector(block: ScriptBlock, slot: int) -> void:
 		current_editing_field = expr_input
 		current_editing_param = "expression"
 		var inferred_name := _infer_character_name_for_slot(block, slot)
+		_set_resource_selected_key("expression", _expression_key(inferred_name, expr_input.text))
 		info_label.text = "%s（推断）: %s" % [slot_name, inferred_name if not inferred_name.is_empty() else "未找到（请先添加对应的“显示角色”块）"]
 		_load_expressions_list(inferred_name)
 	)
@@ -2131,6 +2824,7 @@ func _add_background_block_inspector(block: ScriptBlock):
 	input.focus_entered.connect(func():
 		current_editing_field = input
 		current_editing_param = "background_path"
+		_set_resource_selected_key("background", input.text)
 		_load_backgrounds_list()
 	)
 	inspector_content.add_child(input)
@@ -2152,6 +2846,7 @@ func _add_show_background_block_inspector(block: ScriptBlock):
 	input.focus_entered.connect(func():
 		current_editing_field = input
 		current_editing_param = "background_path"
+		_set_resource_selected_key("background", input.text)
 		_load_backgrounds_list()
 	)
 	inspector_content.add_child(input)
@@ -2188,6 +2883,7 @@ func _add_music_block_inspector(block: ScriptBlock):
 	input.focus_entered.connect(func():
 		current_editing_field = input
 		current_editing_param = "music_path"
+		_set_resource_selected_key("music", input.text)
 		_load_music_list()
 	)
 	inspector_content.add_child(input)
