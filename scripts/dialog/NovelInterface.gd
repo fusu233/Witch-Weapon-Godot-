@@ -1839,6 +1839,9 @@ func end_story_episode(fade_duration: float = 0.5) -> void:
 	"""结束剧情章节并返回主菜单"""
 	print("=== 剧情章节结束 ===")
 	
+	"""清空所有历史记录"""
+	clear_dialog_history_static()
+	
 	# 隐藏所有界面元素
 	hide_all_story_elements()
 	
